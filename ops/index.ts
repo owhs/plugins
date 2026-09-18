@@ -38,7 +38,10 @@ function run(cmd: string[], cwd: string): Promise<{ ok: boolean; out: string }> 
 const BACKUP_NAME = /^\d{8}-\d{6}(-prerestore-\d{8}-\d{6})?\.tar\.gz$/
 
 export function register(ctx: PluginContext) {
-  const dir: string = (ctx.env as any).projectDir
+  // env.driver is the StorageDriver for this site's project root (site/, media/).
+  // Only the local filesystem driver (FsDriver) actually has an on-disk root —
+  // R2/memory/FSA-backed sites have no such path, hence the guard below.
+  const dir: string | undefined = (ctx.env.driver as any)?.root
   const backupsDir = `${dir}/backups`
 
   ctx.adminPanel({ label: 'Sync & Backups', icon: 'db' })
