@@ -17,6 +17,7 @@ import * as drive from './drive/index.ts'
 import * as commerce from './commerce/index.ts'
 import * as mdsync from './mdsync/index.ts'
 import * as progress from './progress/index.ts'
+import * as ops from './ops/index.ts'
 
 export const builtinPlugins = {
   forms: { manifest: forms.manifest, register: forms.register },
@@ -34,4 +35,5 @@ export const builtinPlugins = {
   commerce: { manifest: commerce.manifest, register: commerce.register },
   mdsync: { manifest: mdsync.manifest, register: mdsync.register },
   ai: { manifest: ai.manifest, register: ai.register },
+  ops: { manifest: ops.manifest, register: ops.register },
 }
