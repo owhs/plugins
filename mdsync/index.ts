@@ -8,7 +8,7 @@ import type { PluginManifest } from '../../blockhouse/src/core/types.ts'
 
 export const manifest: PluginManifest = {
   id: 'mdsync', name: 'Markdown sync', version: '0.1.0', builtin: true,
-  description: 'Build the site from markdown files — Obsidian vaults, docs folders, zips. Frontmatter → fields, body → blocks.',
+  description: 'Builds pages from plain text files you write elsewhere, such as an Obsidian notebook or a folder of documents.',
   permissions: ['routes.api', 'secure.tables', 'settings.own', 'content.read', 'content.write', 'events.emit'],
 }
 

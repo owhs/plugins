@@ -9,7 +9,7 @@ import { sha256hex } from '../../blockhouse/src/core/util.ts'
 
 export const manifest: PluginManifest = {
   id: 'analytics', name: 'Analytics', version: '0.1.0', builtin: true,
-  description: 'Cookieless, privacy-first traffic analytics with a studio dashboard',
+  description: 'Counts visits to your pages without cookies or tracking, and shows the numbers here.',
   permissions: ['routes.public', 'routes.api', 'secure.tables', 'settings.own'],
 }
 

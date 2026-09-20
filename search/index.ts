@@ -11,7 +11,7 @@ import { mdText } from '../../blockhouse/src/core/markdown.ts'
 
 export const manifest: PluginManifest = {
   id: 'search', name: 'Search', version: '0.1.0', builtin: true,
-  description: 'Full-text site search — live index + static search-index.json for flat builds',
+  description: 'A search box for your site, so visitors can find a page by typing part of its name.',
   permissions: ['blocks.register', 'routes.public', 'routes.api', 'settings.own', 'events.listen', 'content.read'],
 }
 
@@ -42,7 +42,7 @@ export function register(ctx: PluginContext) {
   ctx.events.on('content.unpublished', async () => { index = null })
   ctx.events.on('content.saved', async () => { index = null })
 
-  ctx.adminPanel({ label: 'Search', icon: 'search' })
+  ctx.adminPanel({ label: 'Search', icon: 'search', settingsOnly: true })
 
   ctx.routes.public(app => {
     // OpenSearch target: /x/search/go?q=… — 302 to the best match, or render a

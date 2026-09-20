@@ -13,7 +13,7 @@ import { escapeAttr as ea, escapeHtml as eh, id as genId, now, randomToken, sha2
 
 export const manifest: PluginManifest = {
   id: 'members', name: 'Members', version: '0.1.0', builtin: true,
-  description: 'Visitor accounts, magic-link login, member-only pages and an account portal',
+  description: 'Lets visitors make an account and sign in, so some pages are only for them.',
   permissions: ['blocks.register', 'routes.root', 'routes.public', 'routes.api', 'secure.tables', 'settings.own', 'mail.send', 'events.emit', 'content.read'],
 }
 

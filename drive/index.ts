@@ -10,7 +10,7 @@ import { escapeHtml as eh } from '../../blockhouse/src/core/util.ts'
 
 export const manifest: PluginManifest = {
   id: 'drive', name: 'Drive (client portal)', version: '0.1.0', builtin: true,
-  description: 'Private document areas gated by member groups, with self-signup, access requests and download tracking',
+  description: 'A private download area for clients. They sign in, you choose who sees which folder, and you can see what was downloaded.',
   permissions: ['routes.public', 'routes.api', 'secure.tables', 'settings.own', 'mail.send', 'events.emit', 'files.private', 'blocks.register'],
 }
 

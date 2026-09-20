@@ -9,7 +9,7 @@ import { escapeAttr as ea } from '../../blockhouse/src/core/util.ts'
 
 export const manifest: PluginManifest = {
   id: 'progress', name: 'Reading progress', version: '0.1.0', builtin: true,
-  description: 'A configurable scroll/read progress line — position, thickness, colour, gradient and glow',
+  description: 'A thin line across the top of the page showing how far down a reader has got.',
   permissions: ['blocks.register'],
 }
 

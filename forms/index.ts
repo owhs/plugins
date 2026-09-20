@@ -8,7 +8,7 @@ import { escapeAttr as ea, escapeHtml as eh } from '../../blockhouse/src/core/ut
 
 export const manifest: PluginManifest = {
   id: 'forms', name: 'Forms', version: '0.1.0', builtin: true,
-  description: 'Form builder with spam protection, storage, email/webhook actions',
+  description: 'Contact and quote forms. Submissions are kept here and can be emailed to you.',
   permissions: ['blocks.register', 'routes.public', 'routes.api', 'secure.tables', 'settings.own', 'mail.send', 'events.listen', 'events.emit', 'net.fetch'],
 }
 

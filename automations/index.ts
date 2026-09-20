@@ -7,7 +7,7 @@ import type { PluginManifest } from '../../blockhouse/src/core/types.ts'
 
 export const manifest: PluginManifest = {
   id: 'automations', name: 'Automations', version: '0.1.0', builtin: true,
-  description: 'Event-driven recipes: webhooks, emails, content ops, inbound triggers',
+  description: 'Does jobs for you when something happens — email you when a form arrives, publish on a date, tell another service.',
   permissions: ['events.listen', 'events.emit', 'routes.public', 'routes.api', 'secure.tables', 'settings.own', 'mail.send', 'net.fetch', 'actions.register', 'content.read', 'content.write'],
 }
 

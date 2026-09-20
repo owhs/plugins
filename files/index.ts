@@ -10,7 +10,7 @@ import { escapeHtml as eh } from '../../blockhouse/src/core/util.ts'
 
 export const manifest: PluginManifest = {
   id: 'files', name: 'File delivery', version: '0.1.0', builtin: true,
-  description: 'Private files with magic links, one-time links and signature flows',
+  description: 'Send someone a private file through a link that only works for them, and ask them to sign for it.',
   permissions: ['routes.root', 'routes.public', 'routes.api', 'secure.tables', 'settings.own', 'mail.send', 'events.emit', 'files.private'],
 }
 

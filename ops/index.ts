@@ -32,7 +32,7 @@ import { can } from '../../blockhouse/src/core/permissions.ts'
 
 export const manifest: PluginManifest = {
   id: 'ops', name: 'Sync & backups', version: '0.1.0', builtin: true,
-  description: 'Commit the current state to git, branch off in-progress work, and back up/restore this site’s own data, from Studio.',
+  description: 'Keeps a history of this site and backs it up, so you can put things back the way they were.',
   permissions: ['routes.api', 'settings.own'],
 }
 

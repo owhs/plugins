@@ -9,7 +9,7 @@ import { escapeHtml as eh } from '../../blockhouse/src/core/util.ts'
 
 export const manifest: PluginManifest = {
   id: 'consent', name: 'Consent & cookies', version: '0.1.0', builtin: true,
-  description: 'GDPR-friendly consent banner, preference centre, and analytics gating',
+  description: 'The cookie message visitors see, and the page where they can change their mind. Keeps visit counting switched off until they agree.',
   permissions: ['blocks.register', 'settings.own'],
 }
 

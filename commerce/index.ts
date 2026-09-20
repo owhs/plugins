@@ -11,7 +11,7 @@ import { escapeHtml as eh } from '../../blockhouse/src/core/util.ts'
 
 export const manifest: PluginManifest = {
   id: 'commerce', name: 'Commerce', version: '0.1.0', builtin: true,
-  description: 'Carts, checkout and orders on top of your data tables — Stripe or manual/invoice payment',
+  description: 'Sell things from your site: a basket, a checkout and a list of orders. Takes card payments through Stripe, or lets you invoice.',
   permissions: ['routes.public', 'routes.api', 'secure.tables', 'settings.own', 'mail.send', 'events.emit', 'events.listen', 'net.fetch', 'blocks.register', 'content.read', 'actions.register'],
 }
 

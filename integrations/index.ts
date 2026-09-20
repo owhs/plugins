@@ -12,7 +12,7 @@ import { randomToken } from '../../blockhouse/src/core/util.ts'
 
 export const manifest: PluginManifest = {
   id: 'integrations', name: 'Integrations', version: '0.1.0', builtin: true,
-  description: 'OAuth2 + API connectors: Google (Gmail/Drive), Xero, Zapier/Make, and any REST API',
+  description: 'Connects your site to services you already use — Google, Xero, Zapier and others.',
   permissions: ['routes.api', 'routes.public', 'secure.tables', 'settings.own', 'net.fetch', 'actions.register', 'events.emit'],
 }
 

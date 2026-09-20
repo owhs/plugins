@@ -9,7 +9,7 @@ import { escapeAttr as ea, escapeHtml as eh } from '../../blockhouse/src/core/ut
 
 export const manifest: PluginManifest = {
   id: 'newsletter', name: 'Newsletter', version: '0.1.0', builtin: true,
-  description: 'Email lists with double opt-in, signup blocks and campaigns',
+  description: 'A mailing list: a sign-up box for your site, and the emails you send to the people on it.',
   permissions: ['blocks.register', 'routes.public', 'routes.api', 'secure.tables', 'settings.own', 'mail.send', 'events.emit'],
 }
 

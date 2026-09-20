@@ -9,7 +9,7 @@ import { interpolate } from '../automations/index.ts'
 
 export const manifest: PluginManifest = {
   id: 'ai', name: 'AI assist', version: '0.1.0', builtin: true,
-  description: 'Editor assist + agent/webhook triggers via any OpenAI-compatible or MCP HTTP endpoint',
+  description: 'Writing help inside the editor, and automatic replies that use an AI service you sign up for.',
   permissions: ['routes.api', 'settings.own', 'net.fetch', 'actions.register', 'events.listen', 'events.emit'],
 }
 
@@ -48,7 +48,7 @@ export function register(ctx: PluginContext) {
     return json.choices?.[0]?.message?.content?.trim() || ''
   }
 
-  ctx.adminPanel({ label: 'AI assist', icon: 'sparkle' })
+  ctx.adminPanel({ label: 'AI assist', icon: 'sparkle', settingsOnly: true })
 
   ctx.routes.api(app => {
     app.get('/config', async c => {

@@ -17,7 +17,7 @@ import { mdToHtml } from '../../blockhouse/src/core/markdown.ts'
 
 export const manifest: PluginManifest = {
   id: 'data', name: 'Data & apps', version: '0.2.0', builtin: true,
-  description: 'Relational tables, line-item calculators, workflows, reports and scoped API keys',
+  description: 'Your own tables of information — price lists, job records, calculators — with reports you can build.',
   permissions: ['routes.public', 'routes.api', 'secure.tables', 'settings.own', 'actions.register', 'events.emit', 'content.read'],
 }
 
