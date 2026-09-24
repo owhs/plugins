@@ -18,6 +18,7 @@ import * as commerce from './commerce/index.ts'
 import * as mdsync from './mdsync/index.ts'
 import * as progress from './progress/index.ts'
 import * as ops from './ops/index.ts'
+import * as ahrefs from './ahrefs/index.ts'
 
 export const builtinPlugins = {
   forms: { manifest: forms.manifest, register: forms.register },
@@ -36,4 +37,5 @@ export const builtinPlugins = {
   mdsync: { manifest: mdsync.manifest, register: mdsync.register },
   ai: { manifest: ai.manifest, register: ai.register },
   ops: { manifest: ops.manifest, register: ops.register },
+  ahrefs: { manifest: ahrefs.manifest, register: ahrefs.register },
 }
