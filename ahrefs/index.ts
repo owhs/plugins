@@ -309,6 +309,59 @@ export function register(ctx: PluginContext) {
     return { cachedAt: r.cachedAt, units: r.units, cached: r.cached, rows }
   }
 
+  /**
+   * Launch check: the addresses on the real domain that earn something —
+   * search visits or links from other sites — measured against what this
+   * site will actually answer. Built for the move from an old site to this
+   * one: while the domain still shows the old site, Ahrefs is describing the
+   * OLD site's pages, and every one the new site lacks becomes a "not found"
+   * (and a lost link) the day the domain switches. Each gets a redirect first.
+   *
+   * Reuses the Pages report's answer (same parameters, same cache) and adds
+   * one pages-by-backlinks call, about 9 units a row.
+   */
+  async function launchCheck(fresh: boolean) {
+    const { s, target } = await base(fresh)
+    const [pages, linked] = await Promise.all([
+      topPages(fresh),
+      call('/site-explorer/pages-by-backlinks', {
+        target, mode: s.mode, protocol: 'both', limit: s.rows, history: 'live', order_by: 'refdomains_target:desc',
+        select: 'url_to,refdomains_target,top_domain_rating_source,http_code_target',
+      }, { fresh }),
+    ])
+    const known = new Set<string>(['/'])
+    for (const k of (await docIndex()).keys()) known.add(k.replace(/\/$/, '') || '/')
+    for (const c of await ctx.env.content.concepts()) if (c.indexPath) known.add(String(c.indexPath).replace(/\/$/, '') || '/')
+    const redirects = new Map<string, string>()
+    for (const r of await ctx.env.content.redirects()) redirects.set(String(r.from).replace(/\/$/, '') || '/', r.to)
+
+    const byPath = new Map<string, any>()
+    const row = (url: string) => {
+      const path = pathOf(url)
+      if (!path) return null
+      if (!byPath.has(path)) byPath.set(path, { path, url, visits: 0, linkingSites: 0, bestLinkDR: null })
+      return byPath.get(path)
+    }
+    for (const p of pages.rows) { const r = row(p.url); if (r) r.visits += p.sum_traffic || 0 }
+    for (const l of linked.data.pages || []) {
+      const r = row(l.url_to); if (!r) continue
+      r.linkingSites = Math.max(r.linkingSites, l.refdomains_target || 0)
+      r.bestLinkDR = Math.max(r.bestLinkDR ?? 0, l.top_domain_rating_source ?? 0)
+    }
+    const rows = [...byPath.values()].map(r => ({
+      ...r,
+      state: known.has(r.path) ? 'exists' : redirects.has(r.path) ? 'redirected' : 'missing',
+      redirectTo: redirects.get(r.path) || null,
+    }))
+    const weight = (r: any) => r.visits + r.linkingSites * 20
+    const order: Record<string, number> = { missing: 0, redirected: 1, exists: 2 }
+    rows.sort((a, b) => order[a.state] - order[b.state] || weight(b) - weight(a))
+    return {
+      target, cachedAt: oldest(pages, linked), units: spent(pages, linked), cached: allCached(pages, linked),
+      missing: rows.filter(r => r.state === 'missing').length, rows,
+    }
+  }
+
   async function competitors(fresh: boolean) {
     const { s, target } = await base(fresh)
     const r = await call('/site-explorer/organic-competitors', {
@@ -541,6 +594,7 @@ export function register(ctx: PluginContext) {
     app.get('/keywords', wrap(async c => organicKeywords(fresh(c))))
     app.get('/pages', wrap(async c => topPages(fresh(c))))
     app.get('/competitors', wrap(async c => competitors(fresh(c))))
+    app.get('/launch', wrap(async c => launchCheck(fresh(c))))
     app.get('/research', wrap(async c => research(c.req.query('q') || '', c.req.query('country') || '', fresh(c))))
     app.get('/serp', wrap(async c => serp(c.req.query('q') || '', c.req.query('country') || '', fresh(c))))
     app.get('/page', wrap(async c => pageReport(c.req.query('path') || '/', c.req.query('keyword') || '', fresh(c))))
@@ -564,6 +618,7 @@ export function register(ctx: PluginContext) {
           : report === 'keywords' ? (await organicKeywords(f)).rows
           : report === 'pages' ? (await topPages(f)).rows.map(({ doc, ...r }: any) => ({ ...r, studio_page: doc?.title || '' }))
           : report === 'competitors' ? (await competitors(f)).rows
+          : report === 'launch' ? (await launchCheck(f)).rows
           : report === 'ranks' ? (await ranks(c.req.query('device') || 'desktop', f)).rows
           : report === 'snapshots' ? await ctx.store.kvGet<any[]>('snapshots', [])
           : null
@@ -630,18 +685,35 @@ export function diffSnapshots(prev: any, next: any): { key: string; from: number
 }
 
 /** <head> additions for live pages — see render/page.ts. Empty unless configured. */
-export function headHtml(settings: Partial<AhrefsSettings> | undefined, opts: { consentGate?: boolean } = {}): string {
+/** "https://www.Example.co.uk/x" → "example.co.uk". The www. and the path don't matter for "is this the real site?". */
+export function bareHost(url: string): string {
+  try { return new URL(/^https?:\/\//.test(url) ? url : `https://${url}`).hostname.toLowerCase().replace(/^www\./, '') } catch { return '' }
+}
+
+/**
+ * <head> additions for live pages — see render/page.ts. Empty unless configured.
+ *
+ * The same pages are served on a staging address (strongman.owhs.uk) before the
+ * real domain points at them, and may be cached across both, so whether to
+ * count a visit is decided in the browser: Web Analytics only loads when the
+ * page is being viewed on `productionHost` (www. or not). Staging visits never
+ * reach the Ahrefs project, and the day the domain switches over it simply
+ * starts counting — nothing to change.
+ */
+export function headHtml(settings: Partial<AhrefsSettings> | undefined, opts: { consentGate?: boolean; productionHost?: string } = {}): string {
   const s = { ...DEFAULTS, ...(settings || {}) }
   const out: string[] = []
   const ver = String(s.verification || '').replace(/[^A-Za-z0-9_-]/g, '')
   if (ver) out.push(`<meta name="ahrefs-site-verification" content="${ver}">`)
   const key = String(s.analyticsKey || '').replace(/[^A-Za-z0-9_-]/g, '')
-  if (key && s.loadAnalytics) {
+  const prod = bareHost(opts.productionHost || '').replace(/[^a-z0-9.-]/g, '')
+  if (key && s.loadAnalytics && prod) {
     // Cookieless, but a site running the consent banner has promised visitors
     // that analytics waits for a yes, so it waits.
-    out.push(opts.consentGate
-      ? `<script>(function(){try{var c=(document.cookie.match(/(?:^|; )blockhouse_consent=([^;]*)/)||[])[1];if(!c||c.indexOf('analytics')<0)return;var s=document.createElement('script');s.src='https://analytics.ahrefs.com/analytics.js';s.async=true;s.setAttribute('data-key',${JSON.stringify(key)});document.head.appendChild(s)}catch(e){}})()</script>`
-      : `<script src="https://analytics.ahrefs.com/analytics.js" data-key="${key}" async></script>`)
+    const consent = opts.consentGate
+      ? `var c=(document.cookie.match(/(?:^|; )blockhouse_consent=([^;]*)/)||[])[1];if(!c||c.indexOf('analytics')<0)return;`
+      : ''
+    out.push(`<script>(function(){try{if(location.hostname.toLowerCase().replace(/^www\\./,'')!==${JSON.stringify(prod)})return;${consent}var s=document.createElement('script');s.src='https://analytics.ahrefs.com/analytics.js';s.async=true;s.setAttribute('data-key',${JSON.stringify(key)});document.head.appendChild(s)}catch(e){}})()</script>`)
   }
   return out.join('\n')
 }
