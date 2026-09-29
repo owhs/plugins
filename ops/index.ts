@@ -29,6 +29,7 @@
 import type { PluginContext } from '../../blockhouse/src/core/plugin.ts'
 import type { PluginManifest } from '../../blockhouse/src/core/types.ts'
 import { can } from '../../blockhouse/src/core/permissions.ts'
+import { privateStateDir } from '../../blockhouse/src/secure/sql.ts'
 
 export const manifest: PluginManifest = {
   id: 'ops', name: 'Sync & backups', version: '0.1.0', builtin: true,
@@ -61,6 +62,18 @@ export function register(ctx: PluginContext) {
   // R2/memory/FSA-backed sites have no such path, hence the guard below.
   const dir: string | undefined = (ctx.env.driver as any)?.root
   const backupsDir = `${dir}/backups`
+  // Archives carry a full copy of .blockhouse/ (password hashes, sessions,
+  // sealed secrets), so they get the same owner-only treatment as the original.
+  const privateBackupsDir = async () => {
+    const { mkdir, chmod } = await import('node:fs/promises')
+    await mkdir(backupsDir, { recursive: true, mode: 0o700 })
+    if (process.platform !== 'win32') await chmod(backupsDir, 0o700).catch(() => {})
+  }
+  const privateArchive = async (path: string) => {
+    if (process.platform === 'win32') return
+    const { chmod } = await import('node:fs/promises')
+    await chmod(path, 0o600).catch(() => {})
+  }
 
   ctx.adminPanel({ label: 'Sync & Backups', icon: 'db' })
 
@@ -293,8 +306,7 @@ export function register(ctx: PluginContext) {
         if (last === sig) return c.json({ ok: true, skipped: true, detail: 'nothing changed since the last backup' })
       }
 
-      const { mkdir } = await import('node:fs/promises')
-      await mkdir(backupsDir, { recursive: true })
+      await privateBackupsDir()
       const name = `${stamp()}${label ? '-' + label : ''}.tar.gz`
       const args = ['tar', '-czf', `${backupsDir}/${name}`, '-C', dir]
       const { existsSync } = await import('node:fs')
@@ -302,6 +314,7 @@ export function register(ctx: PluginContext) {
       if (existsSync(`${dir}/media`)) args.push('media')
       if (args.length <= 5) return c.json({ error: 'nothing to back up — no .blockhouse or media directory' }, 400)
       const res = await run(args, dir)
+      await privateArchive(`${backupsDir}/${name}`)
       if (!res.ok) return c.json({ error: res.out }, 500)
 
       await ctx.settings.set('lastBackupSignature', await contentSignature())
@@ -322,16 +335,17 @@ export function register(ctx: PluginContext) {
       const archive = `${backupsDir}/${name}`
       if (!existsSync(archive)) return c.json({ error: 'no such backup' }, 404)
 
-      const { mkdir } = await import('node:fs/promises')
-      await mkdir(backupsDir, { recursive: true })
+      await privateBackupsDir()
       const s = stamp()
       const safety = `${s}-prerestore-${s}.tar.gz`
       const safetyArgs = ['tar', '-czf', `${backupsDir}/${safety}`, '-C', dir]
       if (existsSync(`${dir}/.blockhouse`)) safetyArgs.push('.blockhouse')
       if (existsSync(`${dir}/media`)) safetyArgs.push('media')
-      if (safetyArgs.length > 5) await run(safetyArgs, dir)
+      if (safetyArgs.length > 5) { await run(safetyArgs, dir); await privateArchive(`${backupsDir}/${safety}`) }
 
       const res = await run(['tar', '-xzf', archive, '-C', dir], dir)
+      // an archive taken before the lockdown carries .blockhouse/ as 755
+      if (existsSync(`${dir}/.blockhouse`)) await privateStateDir(`${dir}/.blockhouse`)
       if (!res.ok) return c.json({ error: res.out }, 500)
       ctx.env.invalidate?.()
 
