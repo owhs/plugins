@@ -163,6 +163,20 @@ export function register(ctx: PluginContext) {
       return st.ok ? st.out.split('\n').filter(Boolean).length : 0
     }
 
+    // On the weft server a saved version goes straight on to GitHub as well,
+    // via the server's own mirror script (which holds the GitHub sign-in).
+    // Anywhere else — a laptop, a different host — there is nothing to do.
+    function mirrorToGithub() {
+      const script = '/srv/weft/infra/bin/github-mirror.ts'
+      const gitDir = process.env.GIT_DIR || ''
+      const repo = gitDir.split('/').pop()?.replace(/\.git$/, '')
+      if (!repo || process.platform === 'win32') return
+      import('node:fs').then(({ existsSync }) => {
+        if (!existsSync(script)) return
+        Bun.spawn([process.execPath, script, repo], { cwd: '/srv/weft/infra', stdout: 'ignore', stderr: 'ignore' })
+      }).catch(() => {})
+    }
+
     /** Commit whatever is on disk. Returns the new hash, or null when nothing changed. */
     async function saveVersion(message: string): Promise<{ hash: string | null; error?: string }> {
       await keepPrivateOutOfGit()
@@ -180,6 +194,7 @@ export function register(ctx: PluginContext) {
       if (!commit.ok) return { hash: null, error: commit.out }
       const up = await run(['git', 'update-ref', `refs/heads/${branch}`, commit.out, head || ''], dir!)
       if (!up.ok) return { hash: null, error: up.out }
+      mirrorToGithub()
       return { hash: commit.out }
     }
 
