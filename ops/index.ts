@@ -4,7 +4,8 @@
 // so it ships with every Blockhouse install rather than being specific to
 // this one deployment.
 //
-// Git sync just runs `git add -A && git commit` in the project directory —
+// Git sync stages everything and commits it (commit-tree, so no edit-message
+// file is needed in the repo) in the project directory —
 // if that directory (or a parent of it) has its own .git, this works with
 // zero configuration. A deployment that keeps a site's working tree checked
 // out against a *separate* bare repo (GIT_DIR/GIT_WORK_TREE, rather than an
@@ -12,11 +13,9 @@
 // as environment variables — this plugin never needs to know that scheme
 // exists, the process environment just needs to carry them.
 //
-// Branches reuse plain git branches rather than inventing a parallel
-// "draft" concept: abandoning in-progress work commits it onto a new branch
-// (nothing is lost, it's just not live any more) and switches the working
-// tree back to whichever branch is the site's actual current state. Picking
-// that branch back up later is an ordinary checkout.
+// Versions are plain commits on the site's one branch; a named version is a
+// tag. Going back to a version restores its files and saves that as a new
+// version, so the branch is never switched and nothing is ever lost.
 //
 // Backups are a plain tar.gz of .blockhouse/ (users, sessions) + media/,
 // written to backups/ under the project directory by default — restore
@@ -32,7 +31,7 @@ import { can } from '../../blockhouse/src/core/permissions.ts'
 import { privateStateDir } from '../../blockhouse/src/secure/sql.ts'
 
 export const manifest: PluginManifest = {
-  id: 'ops', name: 'Sync & backups', version: '0.1.0', builtin: true,
+  id: 'ops', name: 'Versions & backups', version: '0.1.0', builtin: true,
   description: 'Keeps a history of this site and backs it up, so you can put things back the way they were.',
   permissions: ['routes.api', 'settings.own'],
 }
@@ -47,13 +46,6 @@ function run(cmd: string[], cwd: string): Promise<{ ok: boolean; out: string }> 
 
 const BACKUP_NAME = /^\d{8}-\d{6}(-prerestore-\d{8}-\d{6}|-[a-z0-9][a-z0-9-]{0,39})?\.tar\.gz$/
 const LABEL = /^[a-z0-9][a-z0-9-]{0,39}$/
-// Git ref rules, kept conservative rather than exhaustive: no "..", no
-// "@{", no leading/trailing dash or slash, no ".lock" suffix.
-const BRANCH_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,50}[a-zA-Z0-9]$/
-function validBranch(name: string) {
-  return BRANCH_NAME.test(name) && !name.includes('..') && !name.includes('@{') && !name.endsWith('.lock')
-}
-
 const stamp = () => new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
 
 export function register(ctx: PluginContext) {
@@ -75,7 +67,7 @@ export function register(ctx: PluginContext) {
     await chmod(path, 0o600).catch(() => {})
   }
 
-  ctx.adminPanel({ label: 'Sync & Backups', icon: 'db' })
+  ctx.adminPanel({ label: 'Versions & backups', icon: 'db' })
 
   ctx.settingsSection({
     key: 'backups', label: 'Backups',
@@ -135,141 +127,136 @@ export function register(ctx: PluginContext) {
   }
 
   ctx.routes.api(app => {
-    // ---------- git sync ----------
+    // ---------- versions ----------
+    // One timeline. "Save a version" is a commit; naming it adds a tag; "go
+    // back" restores that version's files and saves THAT as a new version, so
+    // the history only ever moves forward and the site never leaves its branch.
+    // Commits are made with commit-tree + update-ref rather than `git commit`,
+    // which needs to write COMMIT_EDITMSG in the repo — a file a stricter
+    // deployment may not let this process touch.
+
+    const AUTHOR = ['-c', 'user.email=studio@weft.local', '-c', 'user.name=Blockhouse Studio']
+    const VERSION_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/
+    const isRepo = async () => (await run(['git', 'rev-parse', '--is-inside-work-tree'], dir!)).ok
+    const branchOf = async () => (await run(['git', 'branch', '--show-current'], dir!)).out || 'master'
+
+    // Accounts, keys and sessions (.blockhouse), uploads and backups live inside
+    // the site folder but are never part of a version: backups cover them.
+    const NEVER_VERSIONED = ['.blockhouse/', 'backups/', 'media/_var/']
+    const isProtected = (path: string) => NEVER_VERSIONED.some(p => path === p.slice(0, -1) || path.startsWith(p))
+    async function keepPrivateOutOfGit() {
+      const gd = (await run(['git', 'rev-parse', '--git-dir'], dir!)).out
+      if (!gd) return
+      const { readFile, writeFile, mkdir } = await import('node:fs/promises')
+      const path = `${gd.startsWith('/') || /^[A-Za-z]:/.test(gd) ? gd : `${dir}/${gd}`}/info/exclude`
+      const cur = await readFile(path, 'utf8').catch(() => '')
+      const missing = NEVER_VERSIONED.filter(p => !cur.split('\n').some(l => l.trim() === p))
+      if (!missing.length) return
+      await mkdir(path.replace(/[\\/]exclude$/, ''), { recursive: true }).catch(() => {})
+      await writeFile(path, `${cur.trimEnd()}\n${missing.join('\n')}\n`.trimStart()).catch(() => {})
+      // anything of theirs that an older setup had already versioned stops being tracked
+      await run(['git', 'rm', '-r', '-q', '--cached', '--ignore-unmatch', ...NEVER_VERSIONED.map(p => p.slice(0, -1))], dir!)
+    }
+
+    async function dirtyCount(): Promise<number> {
+      const st = await run(['git', 'status', '--porcelain'], dir!)
+      return st.ok ? st.out.split('\n').filter(Boolean).length : 0
+    }
+
+    /** Commit whatever is on disk. Returns the new hash, or null when nothing changed. */
+    async function saveVersion(message: string): Promise<{ hash: string | null; error?: string }> {
+      await keepPrivateOutOfGit()
+      const add = await run(['git', 'add', '-A'], dir!)
+      if (!add.ok) return { hash: null, error: add.out }
+      const branch = await branchOf()
+      const head = (await run(['git', 'rev-parse', '--verify', '--quiet', 'HEAD'], dir!)).out
+      const tree = await run(['git', 'write-tree'], dir!)
+      if (!tree.ok) return { hash: null, error: tree.out }
+      if (head) {
+        const same = await run(['git', 'diff-tree', '--quiet', head, tree.out], dir!)
+        if (same.ok) return { hash: null }
+      }
+      const commit = await run(['git', ...AUTHOR, 'commit-tree', tree.out, ...(head ? ['-p', head] : []), '-m', message], dir!)
+      if (!commit.ok) return { hash: null, error: commit.out }
+      const up = await run(['git', 'update-ref', `refs/heads/${branch}`, commit.out, head || ''], dir!)
+      if (!up.ok) return { hash: null, error: up.out }
+      return { hash: commit.out }
+    }
 
     app.get('/status', async c => {
       if (!dir) return c.json({ error: 'no filesystem project directory (not available on Workers)' }, 501)
-      const git = await run(['git', 'rev-parse', '--is-inside-work-tree'], dir)
-      if (!git.ok) return c.json({ git: false })
+      if (!(await isRepo())) return c.json({ git: false })
       const log = await run(['git', 'log', '-1', '--format=%H%n%s%n%ad', '--date=relative'], dir)
       const [hash, message, date] = log.ok ? log.out.split('\n') : []
-      const dirty = await run(['git', 'status', '--porcelain'], dir)
-      const branch = await run(['git', 'branch', '--show-current'], dir)
-      return c.json({
-        git: true,
-        branch: branch.ok ? branch.out : null,
-        lastCommit: hash ? { hash: hash.slice(0, 7), message, date } : null,
-        dirty: dirty.ok ? dirty.out.split('\n').filter(Boolean).length : null,
-      })
+      return c.json({ git: true, branch: await branchOf(), lastCommit: hash ? { hash: hash.slice(0, 7), message, date } : null, dirty: await dirtyCount() })
     })
 
+    app.get('/versions', async c => {
+      if (!dir) return c.json({ error: 'no filesystem project directory' }, 501)
+      if (!(await isRepo())) return c.json({ git: false, versions: [] })
+      const log = await run(['git', 'log', '-40', '--format=%H%x09%s%x09%ad%x09%ct%x09%D', '--date=relative', '--decorate=short', '--decorate-refs=refs/tags'], dir)
+      const versions = log.ok ? log.out.split('\n').filter(Boolean).map(l => {
+        const [hash, message, date, ts, deco] = l.split('\t')
+        const names = (deco || '').split(',').map(x => x.trim().replace(/^tag: /, '')).filter(Boolean)
+        return { hash, short: hash.slice(0, 7), message, date, at: Number(ts) * 1000, names }
+      }) : []
+      return c.json({ git: true, dirty: await dirtyCount(), versions })
+    })
+
+    // Save now, optionally under a name people can find again.
     app.post('/sync', async c => {
       if (!dir) return c.json({ error: 'no filesystem project directory' }, 501)
-      const body = await c.req.json().catch(() => ({}))
-      const message = String(body.message || '').trim() || `sync from Studio — ${new Date().toISOString()}`
-      const isRepo = await run(['git', 'rev-parse', '--is-inside-work-tree'], dir)
-      if (!isRepo.ok) return c.json({ error: 'not a git repository (and no GIT_DIR/GIT_WORK_TREE set)' }, 400)
-      await run(['git', 'add', '-A'], dir)
-      const diff = await run(['git', 'diff', '--cached', '--quiet'], dir)
-      if (diff.ok) return c.json({ ok: true, synced: false, detail: 'nothing to sync' })
-      const commit = await run(
-        ['git', '-c', 'user.email=studio@weft.local', '-c', 'user.name=Blockhouse Studio', 'commit', '-q', '-m', message],
-        dir
-      )
-      if (!commit.ok) return c.json({ error: commit.out }, 500)
-      const rev = await run(['git', 'rev-parse', '--short', 'HEAD'], dir)
-      return c.json({ ok: true, synced: true, hash: rev.out })
-    })
-
-    // ---------- branches ----------
-    // A branch is just a checkpoint you can come back to. "Cancel" doesn't
-    // delete anything — it commits whatever's currently on disk onto its
-    // own branch, then puts the working tree back on the one the site is
-    // actually meant to be running.
-
-    app.get('/branches', async c => {
-      if (!dir) return c.json({ error: 'no filesystem project directory' }, 501)
-      const isRepo = await run(['git', 'rev-parse', '--is-inside-work-tree'], dir)
-      if (!isRepo.ok) return c.json({ git: false, branches: [] })
-      const current = (await run(['git', 'branch', '--show-current'], dir)).out
-      const list = await run(['git', 'for-each-ref', '--sort=-committerdate', '--format=%(refname:short)%09%(objectname:short)%09%(subject)%09%(committerdate:relative)', 'refs/heads'], dir)
-      const branches = list.ok
-        ? list.out.split('\n').filter(Boolean).map(line => {
-            const [name, hash, message, date] = line.split('\t')
-            return { name, hash, message, date, current: name === current }
-          })
-        : []
-      const dirty = await run(['git', 'status', '--porcelain'], dir)
-      return c.json({ git: true, current, dirty: dirty.ok ? dirty.out.split('\n').filter(Boolean).length : 0, branches })
-    })
-
-    // Save whatever's on disk right now as a new named checkpoint. Leaves
-    // the site running on that branch (nothing on disk changes to do this —
-    // it's the same content, just labelled and switched to).
-    app.post('/branches', async c => {
-      if (!dir) return c.json({ error: 'no filesystem project directory' }, 501)
+      if (!(await isRepo())) return c.json({ error: 'not a git repository (and no GIT_DIR/GIT_WORK_TREE set)' }, 400)
       const body = await c.req.json().catch(() => ({}))
       const name = String(body.name || '').trim().toLowerCase().replace(/\s+/g, '-')
-      if (!validBranch(name)) return c.json({ error: 'invalid branch name — letters, numbers, dot, dash, slash, underscore only' }, 400)
-      const message = String(body.message || '').trim() || `checkpoint: ${name}`
-      const isRepo = await run(['git', 'rev-parse', '--is-inside-work-tree'], dir)
-      if (!isRepo.ok) return c.json({ error: 'not a git repository' }, 400)
-      const exists = await run(['git', 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`], dir)
-      if (exists.ok) return c.json({ error: `branch "${name}" already exists` }, 409)
-      const checkout = await run(['git', 'checkout', '-b', name], dir)
-      if (!checkout.ok) return c.json({ error: checkout.out }, 500)
-      await run(['git', 'add', '-A'], dir)
-      const diff = await run(['git', 'diff', '--cached', '--quiet'], dir)
-      if (!diff.ok) {
-        const commit = await run(
-          ['git', '-c', 'user.email=studio@weft.local', '-c', 'user.name=Blockhouse Studio', 'commit', '-q', '-m', message],
-          dir
-        )
-        if (!commit.ok) return c.json({ error: commit.out }, 500)
+      if (name && !VERSION_NAME.test(name)) return c.json({ error: 'invalid version name — lowercase letters, numbers and dashes only' }, 400)
+      const message = String(body.message || '').trim() || (name ? `Version: ${name}` : `Saved from the studio — ${new Date().toISOString()}`)
+      const res = await saveVersion(message)
+      if (res.error) return c.json({ error: res.error }, 500)
+      let hash = res.hash
+      if (!hash) {
+        if (!name) return c.json({ ok: true, synced: false, detail: 'nothing to sync' })
+        hash = (await run(['git', 'rev-parse', 'HEAD'], dir)).out   // name the version that already exists
       }
-      return c.json({ ok: true, branch: name })
+      if (name) {
+        const tag = await run(['git', 'update-ref', `refs/tags/${name}`, hash], dir)
+        if (!tag.ok) return c.json({ error: tag.out }, 500)
+      }
+      return c.json({ ok: true, synced: !!res.hash, named: name || null, hash: hash.slice(0, 7) })
     })
 
-    // Switch the live site to an existing branch. Refuses over uncommitted
-    // changes rather than guessing what to do with them — save a checkpoint
-    // (or sync) first.
-    app.post('/branches/:name/checkout', async c => {
+    // Put the site's files back as they were in an older version. Unsaved
+    // work is saved first so nothing is lost; the result is a new version.
+    app.post('/versions/:hash/restore', async c => {
       if (!dir) return c.json({ error: 'no filesystem project directory' }, 501)
-      const name = c.req.param('name')
-      if (!validBranch(name)) return c.json({ error: 'invalid branch name' }, 400)
-      const exists = await run(['git', 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`], dir)
-      if (!exists.ok) return c.json({ error: `no such branch "${name}"` }, 404)
-      const dirty = await run(['git', 'status', '--porcelain'], dir)
-      if (dirty.ok && dirty.out.trim()) return c.json({ error: 'uncommitted changes on disk — save a checkpoint or sync first' }, 409)
-      const checkout = await run(['git', 'checkout', name], dir)
-      if (!checkout.ok) return c.json({ error: checkout.out }, 500)
-      ctx.env.invalidate?.()
-      return c.json({ ok: true, branch: name })
-    })
-
-    // The actual "I don't like this, cancel it, but don't throw it away"
-    // flow: auto-saves any dirty work to its own branch, then puts the
-    // working tree back on the target branch (the site's real state).
-    app.post('/branches/cancel', async c => {
-      if (!dir) return c.json({ error: 'no filesystem project directory' }, 501)
-      const body = await c.req.json().catch(() => ({}))
-      const revertTo = String(body.revertTo || 'master').trim()
-      if (!validBranch(revertTo)) return c.json({ error: 'invalid target branch name' }, 400)
-      const revertExists = await run(['git', 'rev-parse', '--verify', '--quiet', `refs/heads/${revertTo}`], dir)
-      if (!revertExists.ok) return c.json({ error: `no such branch "${revertTo}" to revert to` }, 400)
-
-      const dirty = await run(['git', 'status', '--porcelain'], dir)
-      let savedBranch: string | null = null
-      if (dirty.ok && dirty.out.trim()) {
-        const name = String(body.saveAs || '').trim().toLowerCase().replace(/\s+/g, '-') || `wip-${stamp()}`
-        if (!validBranch(name)) return c.json({ error: 'invalid branch name for the saved work' }, 400)
-        const exists = await run(['git', 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`], dir)
-        if (exists.ok) return c.json({ error: `branch "${name}" already exists — choose another name` }, 409)
-        const checkout = await run(['git', 'checkout', '-b', name], dir)
-        if (!checkout.ok) return c.json({ error: checkout.out }, 500)
-        await run(['git', 'add', '-A'], dir)
-        const commit = await run(
-          ['git', '-c', 'user.email=studio@weft.local', '-c', 'user.name=Blockhouse Studio', 'commit', '-q', '-m', 'cancelled — auto-saved before revert'],
-          dir
-        )
-        if (!commit.ok) return c.json({ error: commit.out }, 500)
-        savedBranch = name
+      const user = (c as any).get('user')
+      if (!can(user, 'settings.write')) return c.json({ error: 'permission required: settings.write' }, 403)
+      const target = c.req.param('hash')
+      if (!/^[0-9a-f]{7,40}$/.test(target)) return c.json({ error: 'invalid version' }, 400)
+      const ok = await run(['git', 'cat-file', '-e', `${target}^{commit}`], dir)
+      if (!ok.ok) return c.json({ error: 'no such version' }, 404)
+      const label = (await run(['git', 'log', '-1', '--format=%s', target], dir)).out
+      let savedFirst: string | null = null
+      if (await dirtyCount()) {
+        const s = await saveVersion('Saved automatically before going back to an earlier version')
+        if (s.error) return c.json({ error: s.error }, 500)
+        savedFirst = s.hash
       }
-
-      const checkout = await run(['git', 'checkout', revertTo], dir)
-      if (!checkout.ok) return c.json({ error: checkout.out }, 500)
+      // Files become that version's: write every file it has, then remove the
+      // ones only the current version has — except the private folders, which
+      // no version is ever allowed to add or delete. HEAD does not move.
+      const gone = (await run(['git', 'diff', '--name-only', '--diff-filter=D', 'HEAD', target], dir)).out.split('\n').filter(Boolean).filter(f => !isProtected(f))
+      const rt = await run(['git', 'read-tree', '--reset', target], dir)
+      if (!rt.ok) return c.json({ error: rt.out }, 500)
+      await run(['git', 'rm', '-r', '-q', '--cached', '--ignore-unmatch', ...NEVER_VERSIONED.map(p => p.slice(0, -1))], dir)
+      const co = await run(['git', 'checkout-index', '-a', '-f'], dir)
+      if (!co.ok) return c.json({ error: co.out }, 500)
+      const { rm } = await import('node:fs/promises')
+      for (const f of gone) await rm(`${dir}/${f}`, { force: true }).catch(() => {})
+      const s = await saveVersion(`Went back to: ${label}`)
+      if (s.error) return c.json({ error: s.error }, 500)
       ctx.env.invalidate?.()
-      return c.json({ ok: true, savedBranch, revertedTo: revertTo })
+      return c.json({ ok: true, savedFirst: !!savedFirst, hash: (s.hash || target).slice(0, 7) })
     })
 
     // ---------- backups ----------
