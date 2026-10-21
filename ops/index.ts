@@ -36,9 +36,23 @@ export const manifest: PluginManifest = {
   permissions: ['routes.api', 'settings.own'],
 }
 
+// A shared bare repo (core.sharedRepository) makes git chmod every object
+// directory it creates to include the setgid bit. A hardened service
+// (systemd RestrictSUIDSGID=yes, which the weft site units use) is forbidden to
+// set that bit, so the chmod fails and the write dies with "unable to create
+// temporary file: Operation not permitted" — whenever a new object lands in a
+// directory that doesn't exist yet. The repo's directories are already setgid
+// (inherited from their parent), so skip git's chmod and take the group-shared
+// permissions from the umask instead: 007 keeps everything group-writable for
+// the deploy user and closed to the world.
+function gitCmd(cmd: string[]): string[] {
+  if (cmd[0] !== 'git' || process.platform === 'win32') return cmd
+  return ['sh', '-c', 'umask 007; exec "$@"', 'sh', 'git', '-c', 'core.sharedRepository=false', ...cmd.slice(1)]
+}
+
 function run(cmd: string[], cwd: string): Promise<{ ok: boolean; out: string }> {
   return new Promise(resolve => {
-    const proc = Bun.spawn(cmd, { cwd, stdout: 'pipe', stderr: 'pipe' })
+    const proc = Bun.spawn(gitCmd(cmd), { cwd, stdout: 'pipe', stderr: 'pipe' })
     Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
       .then(([out, err, code]) => resolve({ ok: code === 0, out: (out + err).trim() }))
   })
@@ -177,23 +191,44 @@ export function register(ctx: PluginContext) {
       }).catch(() => {})
     }
 
+    // A bare "Operation not permitted" says nothing about which step or which
+    // file. Name the step and, for permission failures, who the studio is running
+    // as and who owns the version history, so whoever looks after the server can
+    // fix it from the message alone.
+    async function failed(step: string, out: string): Promise<string> {
+      let msg = `${step}: ${out}`
+      if (!/not permitted|permission denied|EPERM|EACCES/i.test(out)) return msg
+      try {
+        const { stat } = await import('node:fs/promises')
+        const gd = (await run(['git', 'rev-parse', '--absolute-git-dir'], dir!)).out
+        const me = typeof process.getuid === 'function' ? `uid ${process.getuid()}, gid ${process.getgid?.()}` : 'unknown user'
+        const owner = async (p: string) => {
+          const s = await stat(p).catch(() => null)
+          return s ? `${p} owner ${s.uid}:${s.gid} mode ${(s.mode & 0o7777).toString(8)}` : `${p} missing`
+        }
+        const bits = gd ? [await owner(gd), await owner(`${gd}/index`), await owner(`${gd}/objects`), await owner(`${gd}/refs/heads`)] : []
+        msg += ` [studio runs as ${me}; ${bits.join('; ')}]`
+      } catch {}
+      return msg
+    }
+
     /** Commit whatever is on disk. Returns the new hash, or null when nothing changed. */
     async function saveVersion(message: string): Promise<{ hash: string | null; error?: string }> {
       await keepPrivateOutOfGit()
       const add = await run(['git', 'add', '-A'], dir!)
-      if (!add.ok) return { hash: null, error: add.out }
+      if (!add.ok) return { hash: null, error: await failed('git add', add.out) }
       const branch = await branchOf()
       const head = (await run(['git', 'rev-parse', '--verify', '--quiet', 'HEAD'], dir!)).out
       const tree = await run(['git', 'write-tree'], dir!)
-      if (!tree.ok) return { hash: null, error: tree.out }
+      if (!tree.ok) return { hash: null, error: await failed('git write-tree', tree.out) }
       if (head) {
         const same = await run(['git', 'diff-tree', '--quiet', head, tree.out], dir!)
         if (same.ok) return { hash: null }
       }
       const commit = await run(['git', ...AUTHOR, 'commit-tree', tree.out, ...(head ? ['-p', head] : []), '-m', message], dir!)
-      if (!commit.ok) return { hash: null, error: commit.out }
+      if (!commit.ok) return { hash: null, error: await failed('git commit-tree', commit.out) }
       const up = await run(['git', 'update-ref', `refs/heads/${branch}`, commit.out, head || ''], dir!)
-      if (!up.ok) return { hash: null, error: up.out }
+      if (!up.ok) return { hash: null, error: await failed('git update-ref', up.out) }
       mirrorToGithub()
       return { hash: commit.out }
     }
