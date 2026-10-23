@@ -345,11 +345,12 @@ export function register(ctx: PluginContext) {
 
       await privateBackupsDir()
       const name = `${stamp()}${label ? '-' + label : ''}.tar.gz`
-      const args = ['tar', '-czf', `${backupsDir}/${name}`, '-C', dir]
+      // .blockhouse/export holds rebuilt copies of the public site (deploys) — regenerated on demand, not worth archiving
+      const args = ['tar', '-czf', `${backupsDir}/${name}`, '--exclude=.blockhouse/export', '-C', dir]
       const { existsSync } = await import('node:fs')
       if (existsSync(`${dir}/.blockhouse`)) args.push('.blockhouse')
       if (existsSync(`${dir}/media`)) args.push('media')
-      if (args.length <= 5) return c.json({ error: 'nothing to back up — no .blockhouse or media directory' }, 400)
+      if (args.length <= 6) return c.json({ error: 'nothing to back up — no .blockhouse or media directory' }, 400)
       const res = await run(args, dir)
       await privateArchive(`${backupsDir}/${name}`)
       if (!res.ok) return c.json({ error: res.out }, 500)
@@ -375,10 +376,10 @@ export function register(ctx: PluginContext) {
       await privateBackupsDir()
       const s = stamp()
       const safety = `${s}-prerestore-${s}.tar.gz`
-      const safetyArgs = ['tar', '-czf', `${backupsDir}/${safety}`, '-C', dir]
+      const safetyArgs = ['tar', '-czf', `${backupsDir}/${safety}`, '--exclude=.blockhouse/export', '-C', dir]
       if (existsSync(`${dir}/.blockhouse`)) safetyArgs.push('.blockhouse')
       if (existsSync(`${dir}/media`)) safetyArgs.push('media')
-      if (safetyArgs.length > 5) { await run(safetyArgs, dir); await privateArchive(`${backupsDir}/${safety}`) }
+      if (safetyArgs.length > 6) { await run(safetyArgs, dir); await privateArchive(`${backupsDir}/${safety}`) }
 
       const res = await run(['tar', '-xzf', archive, '-C', dir], dir)
       // an archive taken before the lockdown carries .blockhouse/ as 755
@@ -388,7 +389,7 @@ export function register(ctx: PluginContext) {
 
       const settings = await backupSettings()
       await pruneBackups(settings.maxBackups)
-      return c.json({ ok: true, safetySnapshot: safetyArgs.length > 5 ? safety : null })
+      return c.json({ ok: true, safetySnapshot: safetyArgs.length > 6 ? safety : null })
     })
   })
 }
